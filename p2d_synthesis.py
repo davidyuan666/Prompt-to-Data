@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 # =================CONFIGURATION=================
 # 模拟论文中提到的设置 (Section 5.1)
-API_KEY = "your-deepseek-api-key"  # 替换为实际 Key
+API_KEY = "sk-834575b2a7414832bd59f6a60117999f"  # 替换为实际 Key
 BASE_URL = "https://api.deepseek.com" # DeepSeek V2 API 地址
 TEACHER_MODEL = "deepseek-coder" 
 
