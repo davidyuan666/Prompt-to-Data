@@ -1,112 +1,117 @@
 import os
 import json
 import re
-import ast
-from typing import List, Dict, Optional
+import pandas as pd
+from typing import List, Dict
 from openai import OpenAI
 from tqdm import tqdm
 
-# =================CONFIGURATION=================
+# =================配置区域=================
 API_KEY = "sk-834575b2a7414832bd59f6a60117999f" 
 BASE_URL = "https://api.deepseek.com"
 TEACHER_MODEL = "deepseek-coder" 
 
+# Qwen/ChatML 格式 Token
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
 
-# 定义不同的遵循风格 (Section 3.4 提到的 Persona)
-PERSONAS = {
-    "concise": "Act as a direct software engineer. Provide a minimal and clean solution.",
-    "tutorial": "Act as a technical instructor. Use Chain-of-Thought to explain the code steps.",
-    "robust": "Act as a QA engineer. Ensure the code handles edge cases and is robust."
+# 实验设定的三种引导风格
+STYLES = {
+    "Direct": "Provide a concise code solution.",
+    "CoT": "Provide a step-by-step reasoning process before the code.",
+    "Debugging": "Identify potential errors and provide a robust fix."
 }
-# ===============================================
+# ==========================================
 
-class DS1000P2DAnalyzer:
+class P2DSynthesisReporter:
     def __init__(self, api_key: str, base_url: str):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.report_data = []
 
-    def parse_line(self, line: str) -> Dict:
-        """解析 DS-1000 原始行，提取核心 Prompt 和 Reference"""
+    def parse_ds1000(self, line: str) -> Dict:
         data = json.loads(line)
-        # 提取原始描述部分
+        # 提取核心问题描述
         raw_prompt = data.get("prompt", "")
-        # DS-1000 通常在 "Problem:\n\n" 之后描述逻辑
-        description = raw_prompt.split("A:\n\n")[0].replace("Problem:\n\n", "").strip()
-        
+        clean_desc = raw_prompt.split("A:\n\n")[0].replace("Problem:\n\n", "").strip()
         return {
-            "description": description,
-            "reference": data.get("reference_code", ""),
-            "library": data.get("metadata", {}).get("library", "Python"),
-            "problem_id": data.get("metadata", {}).get("problem_id", "0")
+            "id": data.get("metadata", {}).get("problem_id"),
+            "library": data.get("metadata", {}).get("library"),
+            "description": clean_desc,
+            "reference": data.get("reference_code", "")
         }
 
-    def construct_styled_prompt(self, seed: Dict, style: str) -> str:
-        """根据风格构建 Meta-Prompt"""
-        persona = PERSONAS.get(style)
-        return (
-            f"{persona}\n\n"
-            f"Context: {seed['description']}\n"
-            f"Library: {seed['library']}\n\n"
-            f"CRITICAL FORMATTING REQUIREMENT:\n"
-            f"Use strict ChatML tokens:\n"
-            f"{IM_START}user\n[Synthesize a natural instruction for this problem]\n{IM_END}\n"
-            f"{IM_START}assistant\n[Provide the Python solution]\n{IM_END}"
-        )
-
-    def get_completion(self, prompt: str) -> str:
-        try:
-            res = self.client.chat.completions.create(
-                model=TEACHER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7
-            )
-            return res.choices[0].message.content
-        except: return ""
-
-    def calculate_metrics(self, gen_text: str, ref_code: str):
-        """计算 Token 比例和代码变化范围"""
-        # 提取 assistant 中的代码部分
-        code_match = re.search(r"assistant\n(.*?)(?=<\|im_end\|>|$)", gen_text, re.DOTALL)
-        gen_code = code_match.group(1).strip() if code_match else gen_text
+    def analyze_token_metrics(self, gen_text: str, ref_code: str, style: str):
+        """核心指标计算：Token 权重比例与变化范围"""
+        # 提取生成的代码块
+        code_match = re.search(r"```python\n(.*?)```", gen_text, re.DOTALL)
+        gen_code = code_match.group(1).strip() if code_match else ""
         
-        gen_tokens = len(gen_code.split())
+        # 计算 Token 数 (按空格粗略计算，或使用 tiktoken)
+        gen_tokens = len(gen_text.split())
         ref_tokens = len(ref_code.split())
         
-        # Token 比例 (Weight Ratio)
-        ratio = round(gen_tokens / ref_tokens if ref_tokens > 0 else 0, 2)
+        # Token Weight Ratio (TWR)
+        twr = round(gen_tokens / ref_tokens, 2) if ref_tokens > 0 else 0
         
         return {
-            "gen_code": gen_code,
-            "ratio": ratio,
-            "len_diff": gen_tokens - ref_tokens
+            "style": style,
+            "gen_len": gen_tokens,
+            "ref_len": ref_tokens,
+            "twr": twr,
+            "code_alignment": 1 if gen_code.strip() == ref_code.strip() else 0
         }
 
-    def process_file(self, input_path: str, limit: int = 5):
-        final_report = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()[:limit]
+    def generate_and_save(self, input_file: str, sft_output: str, report_output: str):
+        with open(input_file, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
 
-        for line in tqdm(lines, desc="Analyzing DS-1000 P2D"):
-            seed = self.parse_line(line)
-            entry = {"problem_id": seed['problem_id'], "styles": {}}
+        sft_samples = []
+        
+        print(f"🚀 Starting P2D synthesis and report generation...")
+        for line in tqdm(lines[:20]): # 示例处理前20条
+            seed = self.parse_ds1000(line)
             
-            for style in PERSONAS.keys():
-                meta_p = self.construct_styled_prompt(seed, style)
-                raw_response = self.get_completion(meta_p)
-                metrics = self.calculate_metrics(raw_response, seed['reference'])
+            for style_name, style_prompt in STYLES.items():
+                meta_p = (
+                    f"{style_prompt}\nContext: {seed['description']}\n"
+                    f"Format: {IM_START}user\n[Instruction]\n{IM_END}\n"
+                    f"{IM_START}assistant\n[Solution]\n{IM_END}"
+                )
                 
-                entry["styles"][style] = {
-                    "token_ratio": metrics['ratio'],
-                    "generated_code": metrics['gen_code'],
-                    "reference_code": seed['reference']
-                }
-            final_report.append(entry)
-            
-        return final_report
+                # 调用模型
+                response = self.client.chat.completions.create(
+                    model=TEACHER_MODEL,
+                    messages=[{"role": "user", "content": meta_p}],
+                    temperature=0.7
+                )
+                raw_res = response.choices[0].message.content
+                
+                # 分析数据
+                metrics = self.analyze_token_metrics(raw_res, seed['reference'], style_name)
+                metrics['problem_id'] = seed['id']
+                self.report_data.append(metrics)
+                
+                # 保存为微调格式
+                sft_samples.append({"messages": [{"role": "system", "content": style_prompt}, 
+                                               {"role": "user", "content": seed['description']},
+                                               {"role": "assistant", "content": raw_res}]})
 
+        # --- 保存文件 ---
+        # 1. 保存微调数据集 (JSONL)
+        with open(sft_output, 'w', encoding='utf-8') as f:
+            for sample in sft_samples:
+                f.write(json.dumps(sample, ensure_ascii=False) + '\n')
+        
+        # 2. 保存实验报告 (JSON & CSV 为方便分析)
+        df_report = pd.DataFrame(self.report_data)
+        df_report.to_csv(report_output.replace('.json', '.csv'), index=False)
+        with open(report_output, 'w') as f:
+            json.dump(self.report_data, f, indent=4)
+
+        print(f"\n✅ SFT Data saved to: {sft_output}")
+        print(f"✅ Experiment Report saved to: {report_output}")
+
+# 执行
 if __name__ == "__main__":
-    analyzer = DS1000P2DAnalyzer(API_KEY, BASE_URL)
-    # 运行分析并打印结果
-    report = analyzer.process_file("ds1000.jsonl")
-    print(json.dumps(report, indent=2))
+    reporter = P2DSynthesisReporter(API_KEY, BASE_URL)
+    reporter.generate_and_save("ds1000.jsonl", "p2d_sft_train.jsonl", "p2d_experiment_report.json")
