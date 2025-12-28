@@ -7,7 +7,7 @@ from openai import OpenAI
 from tqdm import tqdm
 
 # =================配置区域=================
-API_KEY = "sk-834575b2a7414832bd59f6a60117999f" 
+API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 BASE_URL = "https://api.deepseek.com"
 TEACHER_MODEL = "deepseek-coder" 
 
