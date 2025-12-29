@@ -67,3 +67,8 @@ logs/
 *.temp
 
 main.tex
+
+
+logs
+
+env
