@@ -114,6 +114,10 @@ def evaluate_rq1(filtered_data, use_safe_execution=True, timeout=10):
         'pass_rate': total_passed / total_tested if total_tested > 0 else 0
     }
 
+
+'''
+python rq1_analysis.py --input data/responses.jsonl --output results/rq1.json
+'''
 def main():
     """主函数：运行 RQ1 分析"""
     parser = argparse.ArgumentParser(description='RQ1 Analysis: Code correctness evaluation')
